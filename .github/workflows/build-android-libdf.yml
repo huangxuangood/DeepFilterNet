@@ -1,0 +1,64 @@
+name: Build Android libdf
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang pkg-config unzip
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: |
+          cargo install cargo-ndk --locked
+
+      - name: Check DeepFilterNet project
+        run: |
+          pwd
+          ls
+          grep -R "name = \"deep_filter\"" -n . || true
+          grep -R "capi" -n libDF/Cargo.toml || true
+
+      - name: Build libdf.so for Android arm64-v8a
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -o ./android-jniLibs \
+            build -p deep_filter --release --no-default-features --features capi
+
+      - name: Check output
+        run: |
+          find ./android-jniLibs -name "*.so" -print
+          file ./android-jniLibs/arm64-v8a/libdf.so
+
+      - name: Upload libdf.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepfilternet-android-arm64-v8a
+          path: ./android-jniLibs/arm64-v8a/libdf.so
