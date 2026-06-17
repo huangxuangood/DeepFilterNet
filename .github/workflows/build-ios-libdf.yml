@@ -1,0 +1,140 @@
+name: Build iOS libdf XCFramework
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-path
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            aarch64-apple-ios
+            aarch64-apple-ios-sim
+            x86_64-apple-ios
+
+      - name: Patch libDF crate type for iOS staticlib
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("libDF/Cargo.toml")
+          s = p.read_text()
+
+          old = 'crate-type = ["cdylib", "rlib", "staticlib"]'
+          new = 'crate-type = ["staticlib", "rlib"]'
+
+          if old not in s:
+              raise SystemExit("Expected crate-type line not found")
+
+          p.write_text(s.replace(old, new))
+          print("Patched libDF/Cargo.toml for iOS staticlib")
+          PY
+
+      - name: Build iOS device arm64
+        run: |
+          cargo build \
+            -p deep_filter \
+            --release \
+            --target aarch64-apple-ios \
+            --no-default-features \
+            --features capi
+
+      - name: Build iOS simulator arm64
+        run: |
+          cargo build \
+            -p deep_filter \
+            --release \
+            --target aarch64-apple-ios-sim \
+            --no-default-features \
+            --features capi
+
+      - name: Build iOS simulator x86_64
+        run: |
+          cargo build \
+            -p deep_filter \
+            --release \
+            --target x86_64-apple-ios \
+            --no-default-features \
+            --features capi
+
+      - name: Prepare headers
+        run: |
+          mkdir -p build/headers
+
+          cat > build/headers/deep_filter.h <<'EOF'
+          #ifndef DEEP_FILTER_H
+          #define DEEP_FILTER_H
+
+          #include <stddef.h>
+
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+
+          typedef struct DFState DFState;
+
+          DFState* df_create(const char* path, float atten_lim, const char* log_level);
+          size_t df_get_frame_length(DFState* st);
+          float df_process_frame(DFState* st, float* input, float* output);
+          void df_free(DFState* st);
+
+          #ifdef __cplusplus
+          }
+          #endif
+
+          #endif
+          EOF
+
+      - name: Create simulator universal static library
+        run: |
+          mkdir -p build/simulator
+
+          lipo -create \
+            target/aarch64-apple-ios-sim/release/libdf.a \
+            target/x86_64-apple-ios/release/libdf.a \
+            -output build/simulator/libdf.a
+
+          lipo -info build/simulator/libdf.a
+
+      - name: Create XCFramework
+        run: |
+          rm -rf build/DeepFilter.xcframework
+
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libdf.a \
+            -headers build/headers \
+            -library build/simulator/libdf.a \
+            -headers build/headers \
+            -output build/DeepFilter.xcframework
+
+      - name: Check XCFramework
+        run: |
+          find build/DeepFilter.xcframework -maxdepth 3 -type f -print
+          xcodebuild -showdestinations -scheme dummy || true
+
+      - name: Zip XCFramework
+        run: |
+          cd build
+          zip -r DeepFilter.xcframework.zip DeepFilter.xcframework
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepFilter-iOS-XCFramework
+          path: build/DeepFilter.xcframework.zip
